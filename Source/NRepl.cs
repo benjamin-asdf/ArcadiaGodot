@@ -1,5 +1,5 @@
-
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.IO;
@@ -11,6 +11,7 @@ using BencodeNET.Exceptions;
 using BencodeNET.Objects;
 using clojure.lang;
 using Godot;
+using Microsoft.Scripting.Utils;
 using Thread = System.Threading.Thread;
 using Path = System.IO.Path;
 using Directory = System.IO.Directory;
@@ -102,7 +103,7 @@ namespace Arcadia
 		private static Var findNsVar;
 		private static Var symbolVar;
 		private static Var concatVar;
-		private static Var completeVar;
+		private static Var completionsVar;
 		private static Var configVar;
 
 		private static Namespace shimsNS;
@@ -131,7 +132,7 @@ namespace Arcadia
 			concatVar = RT.var("clojure.core", "concat");
 
 			Util.require("arcadia.internal.nrepl-support");
-			completeVar = RT.var("arcadia.internal.nrepl-support", "complete");
+			completionsVar = RT.var("arcadia.internal.autocompletion", "completions");
 
 			Util.require("arcadia.internal.config");
 			configVar = RT.var("arcadia.internal.config", "get-config");
@@ -314,6 +315,21 @@ namespace Arcadia
 			client.GetStream().Write(bytes, 0, bytes.Length);
 		}
 
+		static string getSymbolStr(BDictionary message)
+		{
+			String symbolStr = "";
+			if (message.TryGetValue("symbol", out var s))
+			{
+				symbolStr = s.ToString();
+			} else if (message.TryGetValue("sym", out var s1)) {
+				symbolStr = s1.ToString();
+			} else if (message.TryGetValue("prefix", out var s2)) {
+				symbolStr = s2.ToString();
+			}
+			return symbolStr;
+		}
+
+
 		static void HandleMessage (BDictionary message, TcpClient client)
 		{
 			var opValue = message["op"];
@@ -396,20 +412,19 @@ namespace Arcadia
 				case "eldoc":
 				case "info":
 
-                    String symbolStr = message["symbol"].ToString();
-
-                    // Editors like Calva that support doc-on-hover sometimes will ask about empty strings or spaces
-					if (symbolStr == "" || symbolStr == null || symbolStr == " ") break;
+					var symbolStr = NRepl.getSymbolStr(message);
+					// Editors like Calva that support doc-on-hover sometimes will ask about empty strings or spaces
+					if (symbolStr == "" || symbolStr == " ") break;
 
 					IPersistentMap symbolMetadata = null;
 					try
 					{
-                        symbolMetadata = (IPersistentMap)metaVar.invoke(nsResolveVar.invoke(
-                            findNsVar.invoke(symbolVar.invoke(message["ns"].ToString())),
-                            symbolVar.invoke(symbolStr)));
-					} catch (TypeNotFoundException) { 
+						symbolMetadata = (IPersistentMap)metaVar.invoke(nsResolveVar.invoke(
+							findNsVar.invoke(symbolVar.invoke(message["ns"].ToString())),
+							symbolVar.invoke(symbolStr)));
+					} catch (TypeNotFoundException) {
 							// We'll just ignore this call if the type cannot be found. This happens sometimes.
-							// TODO: One particular case when this happens is when querying info for a namespace. 
+							// TODO: One particular case when this happens is when querying info for a namespace.
 							//       That case should be handled separately (e.g., via `find-ns`?)
 						}
 
@@ -425,15 +440,23 @@ namespace Arcadia
 							if (entry.val() != null) {
 								String keyStr = entry.key().ToString().Substring(1);
 								String keyVal = entry.val().ToString();
+
 								if (keyStr == "arglists") {
-									keyStr = "arglists-str";
+									// cider expects eldoc here in this format [["(foo)"]]
+									resultMessage["eldoc"] = new BList(((IEnumerable)entry.val()).Select(lst => new BList(((IEnumerable)lst).Select(o => o.ToString()))));
+									resultMessage["arglists-str"] = new BString(keyVal);
+								} else if (keyStr == "forms") {
+									resultMessage[keyStr] = new BList(new [] { keyVal});
+									resultMessage["forms-str"] = new BString(keyVal);
+								} else if (keyStr == "doc") {
+									resultMessage[keyStr] =  new BString(keyVal);
+									resultMessage["docstring"] = new BString(keyVal);
+								} else {
+									resultMessage[keyStr] = new BString(keyVal);
 								}
-								if (keyStr == "forms") {
-									keyStr = "forms-str";
-								}
-								resultMessage[keyStr] = new BString(keyVal);
-						    }
-					    }
+
+							}
+						}
 							SendMessage(resultMessage, client);
 					} else {
 							SendMessage(
@@ -469,7 +492,9 @@ namespace Arcadia
 
 					// Make sure to eval this in the right namespace
 					Var.pushThreadBindings(completeBindings);
-					BList completions = (BList) completeVar.invoke(message["symbol"].ToString());
+
+					var result = completionsVar.invoke(getSymbolStr(message));
+					BList completions = new BList(((IEnumerable)result).Select(o => new BDictionary {  {"candidate", new BString(o.ToString()) }}));
 					Var.popThreadBindings();
 
 					SendMessage(new BDictionary
