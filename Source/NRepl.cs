@@ -481,6 +481,8 @@ namespace Arcadia
 								} else if (keyStr == "doc") {
 									resultMessage[keyStr] =  new BString(keyVal);
 									resultMessage["docstring"] = new BString(keyVal);
+								} else if (keyStr == "line") {
+									resultMessage[keyStr] = new BNumber((int)entry.val());
 								} else {
 									resultMessage[keyStr] = new BString(keyVal);
 								}
