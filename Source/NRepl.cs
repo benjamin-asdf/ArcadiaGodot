@@ -362,6 +362,7 @@ namespace Arcadia
                         {"clone", 1},
                         {"info", 1},
                         {"eldoc", 1},
+                        {"macroexpand", 1},
 						{"classpath", 1},
                     };
 					// Debug.Log("Autocomplete support is enabled?: " + autoCompletionSupportEnabled);
@@ -408,6 +409,35 @@ namespace Arcadia
 					message["code"] = new BString("(do " + message["file"].ToString() + " )");
 					var loadFn = new EvalFn(message, client);
 					loadFn.invoke();
+					break;
+				case "macroexpand":
+				    Namespace macroexpandNs =  Namespace.find(Symbol.create(message["ns"].ToString()));;
+				    var macroexpandBindings =
+					    _sessions[session].assoc( RT.CurrentNSVar, macroexpandNs );
+					Var.pushThreadBindings(macroexpandBindings);
+					try {
+						var code1 = "(macroexpand (quote " + message["code"] + "))";
+						var form = readStringVar.invoke(readStringOptions, code1);
+						var expansion = evalVar.invoke(form);
+						SendMessage(
+							new BDictionary {
+								{ "id", message["id"] },
+								{ "session", session.ToString() },
+								{ "status", new BList { "done" } },
+								{ "expansion", expansion.ToString() }
+							}, client);
+
+					}
+					catch (Exception e) {
+						SendMessage(new BDictionary {
+							{ "id", message["id"] },
+							{ "session", session.ToString() },
+							{ "err", errorStringVar.invoke(e).ToString() },
+						}, client);
+					}
+					finally {
+						Var.popThreadBindings();
+					}
 					break;
 				case "eldoc":
 				case "info":
